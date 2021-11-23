@@ -503,6 +503,9 @@ static int completeLine(struct linenoiseState *ls) {
                     i = (i+1) % (lc.len+1);
                     if (i == lc.len) linenoiseBeep();
                     break;
+#ifdef _WIN32
+                case -32:
+#endif
                 case 27: /* escape */
                     /* Re-show original buffer */
                     if (i < lc.len) refreshLine(ls);
@@ -942,8 +945,10 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
          * character that should be handled next. */
         if (c == 9 && completionCallback != NULL) {
             c = completeLine(&l);
+#ifndef _WIN32
             /* Return on errors */
             if (c < 0) return l.len;
+#endif
             /* Read next character when 0 */
             if (c == 0) continue;
         }
