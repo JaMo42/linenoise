@@ -103,8 +103,10 @@
  *
  */
 
-#include <termios.h>
-#include <unistd.h>
+#ifdef _WIN32
+#  define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
@@ -113,18 +115,51 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
+#ifdef _WIN32
+#  define WIN32_MEAN_AND_LEAN
+#  define NOMINMAX
+#  include <Windows.h>
+#  include <io.h>
+#  include <conio.h>
+#else
+#  include <sys/ioctl.h>
+#  include <unistd.h>
+#  include <termios.h>
+#  include <unistd.h>
+#endif
 #include "linenoise.h"
+
+#ifdef _WIN32
+#  define STDIN_FILENO _fileno (stdin)
+#  define STDOUT_FILENO _fileno (stdout)
+#  define write _write
+#  define read _read
+#  define strdup _strdup
+#  define isatty _isatty
+#  define S_IXUSR 0
+#  define S_IRWXG 0
+#  define S_IRWXO 0
+#  define S_IRUSR _S_IREAD
+#  define S_IWUSR _S_IWRITE
+#  define umask _umask
+#  define chmod _chmod
+typedef int mode_t;
+#endif
 
 #define LINENOISE_DEFAULT_HISTORY_MAX_LEN 100
 #define LINENOISE_MAX_LINE 4096
+#ifndef _WIN32
 static char *unsupported_term[] = {"dumb","cons25","emacs",NULL};
+#endif
 static linenoiseCompletionCallback *completionCallback = NULL;
 static linenoiseHintsCallback *hintsCallback = NULL;
 static linenoiseFreeHintsCallback *freeHintsCallback = NULL;
 
+#ifdef _WIN32
+static DWORD orig_console_mode;
+#else
 static struct termios orig_termios; /* In order to restore at exit.*/
+#endif
 static int maskmode = 0; /* Show "***" instead of input. For passwords. */
 static int rawmode = 0; /* For atexit() function to check if restore is needed*/
 static int mlmode = 0;  /* Multi line mode. Default is single line. */
@@ -152,25 +187,25 @@ struct linenoiseState {
 };
 
 enum KEY_ACTION{
-	KEY_NULL = 0,	    /* NULL */
-	CTRL_A = 1,         /* Ctrl+a */
-	CTRL_B = 2,         /* Ctrl-b */
-	CTRL_C = 3,         /* Ctrl-c */
-	CTRL_D = 4,         /* Ctrl-d */
-	CTRL_E = 5,         /* Ctrl-e */
-	CTRL_F = 6,         /* Ctrl-f */
-	CTRL_H = 8,         /* Ctrl-h */
-	TAB = 9,            /* Tab */
-	CTRL_K = 11,        /* Ctrl+k */
-	CTRL_L = 12,        /* Ctrl+l */
-	ENTER = 13,         /* Enter */
-	CTRL_N = 14,        /* Ctrl-n */
-	CTRL_P = 16,        /* Ctrl-p */
-	CTRL_T = 20,        /* Ctrl-t */
-	CTRL_U = 21,        /* Ctrl+u */
-	CTRL_W = 23,        /* Ctrl+w */
-	ESC = 27,           /* Escape */
-	BACKSPACE =  127    /* Backspace */
+    KEY_NULL = 0,	    /* NULL */
+    CTRL_A = 1,         /* Ctrl+a */
+    CTRL_B = 2,         /* Ctrl-b */
+    CTRL_C = 3,         /* Ctrl-c */
+    CTRL_D = 4,         /* Ctrl-d */
+    CTRL_E = 5,         /* Ctrl-e */
+    CTRL_F = 6,         /* Ctrl-f */
+    CTRL_H = 8,         /* Ctrl-h */
+    TAB = 9,            /* Tab */
+    CTRL_K = 11,        /* Ctrl+k */
+    CTRL_L = 12,        /* Ctrl+l */
+    ENTER = 13,         /* Enter */
+    CTRL_N = 14,        /* Ctrl-n */
+    CTRL_P = 16,        /* Ctrl-p */
+    CTRL_T = 20,        /* Ctrl-t */
+    CTRL_U = 21,        /* Ctrl+u */
+    CTRL_W = 23,        /* Ctrl+w */
+    ESC = 27,           /* Escape */
+    BACKSPACE =  127    /* Backspace */
 };
 
 static void linenoiseAtExit(void);
@@ -216,6 +251,13 @@ void linenoiseSetMultiLine(int ml) {
     mlmode = ml;
 }
 
+#ifdef _WIN32
+static int
+isUnsupportedTerm ()
+{
+  return 0;
+}
+#else
 /* Return true if the terminal name is in the list of terminals we know are
  * not able to understand basic escape sequences. */
 static int isUnsupportedTerm(void) {
@@ -227,7 +269,40 @@ static int isUnsupportedTerm(void) {
         if (!strcasecmp(term,unsupported_term[j])) return 1;
     return 0;
 }
+#endif
 
+#ifdef _WIN32
+static int enableRawMode(int fd)
+{
+  (void)fd;
+  HANDLE h = GetStdHandle (STD_INPUT_HANDLE);
+  if (!_isatty (_fileno (stdin)))
+    goto fatal;
+  if (!atexit_registered)
+    {
+      atexit (linenoiseAtExit);
+      atexit_registered = 1;
+    }
+
+  if (!GetConsoleMode (h, &orig_console_mode))
+    goto fatal;
+
+  DWORD mode = orig_console_mode;
+
+  mode &= ~ENABLE_ECHO_INPUT;
+  mode &= ~ENABLE_LINE_INPUT;
+  mode &= ~ENABLE_PROCESSED_INPUT;
+
+  if (!SetConsoleMode (h, mode))
+    goto fatal;
+  rawmode = 1;
+  return 0;
+
+fatal:
+  errno = ENOTTY;
+  return -1;
+}
+#else
 /* Raw mode: 1960 magic shit. */
 static int enableRawMode(int fd) {
     struct termios raw;
@@ -263,13 +338,35 @@ fatal:
     errno = ENOTTY;
     return -1;
 }
+#endif
 
+#ifdef _WIN32
+static void disableRawMode (int fd)
+{
+  (void)fd;
+  if (rawmode
+      && SetConsoleMode (GetStdHandle (STD_INPUT_HANDLE), orig_console_mode))
+    rawmode = 0;
+}
+#else
 static void disableRawMode(int fd) {
     /* Don't even check the return value as it's too late. */
     if (rawmode && tcsetattr(fd,TCSAFLUSH,&orig_termios) != -1)
         rawmode = 0;
 }
+#endif
 
+#ifdef _WIN32
+static int getColumns (int ifd, int ofd)
+{
+  (void)ifd;
+  (void)ofd;
+  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  if (!GetConsoleScreenBufferInfo (GetStdHandle (STD_OUTPUT_HANDLE), &csbi))
+    return 80;
+  return csbi.srWindow.Right - csbi.srWindow.Left + 1;
+}
+#else
 /* Use the ESC [6n escape sequence to query the horizontal cursor position
  * and return it. On error -1 is returned, on success the position of the
  * cursor. */
@@ -329,6 +426,7 @@ static int getColumns(int ifd, int ofd) {
 failed:
     return 80;
 }
+#endif
 
 /* Clear the screen. Used to handle ctrl+l */
 void linenoiseClearScreen(void) {
@@ -363,7 +461,10 @@ static void freeCompletions(linenoiseCompletions *lc) {
  * structure as described in the structure definition. */
 static int completeLine(struct linenoiseState *ls) {
     linenoiseCompletions lc = { 0, NULL };
-    int nread, nwritten;
+#ifndef _WIN32
+    int nread;
+#endif
+    int nwritten;
     char c = 0;
 
     completionCallback(ls->buf,&lc);
@@ -387,11 +488,15 @@ static int completeLine(struct linenoiseState *ls) {
                 refreshLine(ls);
             }
 
+#ifdef _WIN32
+            c = _getch ();
+#else
             nread = read(ls->ifd,&c,1);
             if (nread <= 0) {
                 freeCompletions(&lc);
                 return -1;
             }
+#endif
 
             switch(c) {
                 case 9: /* tab */
@@ -820,11 +925,17 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
     if (write(l.ofd,prompt,l.plen) == -1) return -1;
     while(1) {
         char c;
+#ifndef _WIN32
         int nread;
+#endif
         char seq[3];
 
+#ifdef _WIN32
+        c = _getch ();
+#else
         nread = read(l.ifd,&c,1);
         if (nread <= 0) return l.len;
+#endif
 
         /* Only autocomplete when the callback is set. It returns < 0 when
          * there was an error reading from fd. Otherwise it will return the
@@ -889,7 +1000,39 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
         case CTRL_N:    /* ctrl-n */
             linenoiseEditHistoryNext(&l, LINENOISE_HISTORY_NEXT);
             break;
+#ifdef _WIN32
+        case -32:  /* _getch uses 0xE0 as escape */
+          {
+            seq[0] = _getch ();
+            switch (seq[0])
+              {
+                case 'H': /* Up */
+                  linenoiseEditHistoryNext(&l, LINENOISE_HISTORY_PREV);
+                  break;
+                case 'P': /* Down */
+                  linenoiseEditHistoryNext(&l, LINENOISE_HISTORY_NEXT);
+                  break;
+                case 'M': /* Right */
+                  linenoiseEditMoveRight(&l);
+                  break;
+                case 'K': /* Left */
+                  linenoiseEditMoveLeft(&l);
+                  break;
+                case 'G': /* Home */
+                  linenoiseEditMoveHome(&l);
+                  break;
+                case 'O': /* End */
+                  linenoiseEditMoveEnd(&l);
+                  break;
+                case 'S': /* Delete key */
+                  linenoiseEditDelete(&l);
+                  break;
+              }
+          }
+          break;
+#endif
         case ESC:    /* escape sequence */
+#ifndef _WIN32
             /* Read the next two bytes representing the escape sequence.
              * Use two calls to handle slow terminals returning the two
              * chars at different times. */
@@ -943,6 +1086,7 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
                     break;
                 }
             }
+#endif
             break;
         default:
             if (linenoiseEditInsert(&l,c)) return -1;
@@ -987,10 +1131,16 @@ void linenoisePrintKeyCodes(void) {
     memset(quit,' ',4);
     while(1) {
         char c;
+#ifndef _WIN32
         int nread;
+#endif
 
+#ifdef _WIN32
+        c = _getch ();
+#else
         nread = read(STDIN_FILENO,&c,1);
         if (nread <= 0) continue;
+#endif
         memmove(quit,quit+1,sizeof(quit)-1); /* shift string to left. */
         quit[sizeof(quit)-1] = c; /* Insert current char on the right. */
         if (memcmp(quit,"quit",sizeof(quit)) == 0) break;

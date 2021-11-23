@@ -3,6 +3,20 @@
 #include <string.h>
 #include "linenoise.h"
 
+#ifdef _WIN32
+#include <ctype.h>
+static int
+strcasecmp (const char *s1, const char *s2)
+{
+  int r;
+  while ((r = tolower (*s1) - tolower (*s2++)) == 0)
+    {
+      if (*s1++ == '\0')
+        break;
+    }
+  return r;
+}
+#endif
 
 void completion(const char *buf, linenoiseCompletions *lc) {
     if (buf[0] == 'h') {
@@ -55,7 +69,7 @@ int main(int argc, char **argv) {
      *
      * The typed string is returned as a malloc() allocated string by
      * linenoise, so the user needs to free() it. */
-    
+
     while((line = linenoise("hello> ")) != NULL) {
         /* Do something with the string. */
         if (line[0] != '\0' && line[0] != '/') {
